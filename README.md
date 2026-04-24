@@ -31,19 +31,6 @@ TUN 虛擬網卡  ←──── vpn_client.py 讀取原始 IP 封包
 
 ---
 
-## 專案結構
-
-```
-vpntun/
-├── tun_core.c       # C：透過 ioctl 開啟 TUN 裝置，讀寫封包
-├── tun_core.h
-├── vpn_server.py    # Python：監聽 UDP、解密、注入 TUN
-├── vpn_client.py    # Python：從 TUN 讀取、加密、送出 UDP
-├── crypto.py        # AES-256-GCM + HKDF 金鑰衍生
-└── Makefile
-```
-
----
 
 ## 環境需求
 
@@ -110,13 +97,11 @@ ping 10.8.0.2
 64 bytes from 10.8.0.2: icmp_seq=2 ttl=64 time=0.05 ms
 ```
 
-> **注意**：同一台機器測試時，Server 使用 `tun0`，Client 必須改用 `tun1`（編輯 `vpn_client.py` 頂部的 `TUN_DEV`）。
-
 ---
 
 ## 兩台機器部署
 
-**Server（機器 B）** 不需修改，直接執行：
+**Server（機器 B）** 直接執行：
 ```bash
 sudo python3 vpn_server.py
 ```
@@ -143,35 +128,14 @@ sudo tcpdump -i lo udp port 51820 -X -c 5
 ```
 
 實際抓到的輸出範例：
-```
-17:48:38.572005 IP localhost.43837 > localhost.51820: UDP, length 76
-        0x0020:  80e7 2210 d97f 028f 1622 7079  ← 12 bytes nonce（隨機）
-        0x002c:  64eb 5545 1b3c 8800 2be8 9408  ← AES-256-GCM 密文
-        0x003c:  cf27 a219 5b19 3625 3e72 c541
-        0x004c:  f779 fdfc 2af5 f301 f1cd f95d
-        0x005c:  8ff7 5ce7 ac2a 7ec8 8276 eaa7  ← 16 bytes GCM 驗證 tag
-```
 
-28 bytes 的 ICMP ping 在網路上變成 76 bytes：
-```
-28B 明文 + 12B nonce + 16B GCM tag = 56B payload
-56B + 8B UDP header + 20B IP header = 76B 總長
-```
+
 
 沒有金鑰，任何人都無法還原原始內容。
 
 ---
 
 ## 封包格式
-
-```
-┌─────────────────────────────────────────────────────┐
-│  UDP Payload（VPN 封包）                            │
-├────────────────┬────────────────────────────────────┤
-│  Nonce（12B）  │  密文 + GCM Tag（N+16 B）          │
-│  每次隨機生成  │  AES-256-GCM 加密後的原始 IP 封包  │
-└────────────────┴────────────────────────────────────┘
-```
 
 - **Nonce**：`os.urandom(12)` 每封包唯一，防止 IV 重用攻擊
 - **密文**：原始 IP 封包以 AES-256-GCM 加密
@@ -188,12 +152,6 @@ sudo tcpdump -i lo udp port 51820 -X -c 5
 | 金鑰衍生 | HKDF-SHA256 | 從預共享密碼安全地衍生會話金鑰 |
 | Nonce | 96-bit 隨機 | GCM 標準長度，碰撞機率可忽略 |
 | 驗證 Tag | 128-bit | 完整 GCM tag，不截短 |
-
-金鑰衍生流程（`crypto.py`）：
-```python
-HKDF(SHA256, length=32, salt="vpntun-salt-v1", info="vpntun-aes256gcm")
-    .derive(pre_shared_key)
-```
 
 ---
 
@@ -216,38 +174,6 @@ sudo ip link delete tun0 2>/dev/null || true
 sudo ip link delete tun1 2>/dev/null || true
 sudo ip route del 10.8.0.0/24 2>/dev/null || true
 ```
-
----
-
-## 已知限制
-
-- **靜態 PSK**：沒有前向保密（Forward Secrecy）。金鑰一旦洩漏，所有歷史流量都可被解密。正式場景應改用 X25519 ECDH 金鑰交換（WireGuard 的做法）。
-- **無重放保護**：缺少封包序號或時間戳驗證，正式部署需補上。
-- **單執行緒**：以 `select()` 做 I/O 多工，足夠學習用途，不適合高吞吐量場景。
-- **同機 TUN 命名衝突**：兩個 process 在同一台機器時，介面名稱必須不同。
-
----
-
-## 延伸方向
-
-| 功能 | 實作方式 |
-|---|---|
-| X25519 金鑰交換 | 以 ECDH 取代 PSK，實現 Perfect Forward Secrecy |
-| TAP 模式（L2） | 改 `IFF_TUN` → `IFF_TAP`，隧道完整乙太網路幀 |
-| 重放攻擊防護 | 加入封包序號 + 滑動視窗驗證 |
-| 多 Client 支援 | Server 以 dict 追蹤每個 client 的 `peer_addr` |
-| 硬體加速 | 串接 OpenSSL EVP，啟用 AES-NI 指令集 |
-| 封包混淆 | 前綴隨機 padding，對抗 DPI 流量特徵識別 |
-
----
-
-## 涵蓋技能
-
-- **C**：`ioctl`、file descriptor、共享函式庫（`ctypes` 橋接）
-- **Python**：`ctypes` FFI、`select()` I/O 多工、UDP socket
-- **Linux 網路**：TUN/TAP 裝置、核心路由、`ip` 指令
-- **密碼學**：AES-256-GCM、HKDF、nonce 管理、AEAD 設計
-- **系統程式設計**：Userspace ↔ 核心封包注入
 
 ---
 
