@@ -129,7 +129,7 @@ sudo tcpdump -i lo udp port 51820 -X -c 5
 
 實際抓到的輸出範例：
 
-
+![image](https://github.com/xuanxxx2002/vpnturn/blob/main/image2.png)
 
 沒有金鑰，任何人都無法還原原始內容。
 
